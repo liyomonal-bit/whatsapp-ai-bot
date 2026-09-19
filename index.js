@@ -1076,7 +1076,7 @@ async function checkExams(sock) {
 }
 
 // ================================================================
-//  📝 QUIZ GENERATOR
+//  📝 QUIZ GENERATOR (WITH ADVANCED MULTI-PDF SUPPORT)
 // ================================================================
 async function handleQuizCommand(sock, sender, msg, specificModule = '') {
     try {
@@ -1146,14 +1146,16 @@ async function handleQuizCommand(sock, sender, msg, specificModule = '') {
         const moduleCode = selectedModule.code;
         const moduleName = selectedModule.fullName || moduleCode;
 
+        // ✅ NEW LOGIC: Find ALL matching PDFs for this module
         const moduleKeywords = MODULE_FILE_MAP[moduleCode] || [moduleCode.toLowerCase()];
-        const file = fileRegistry.find(f => {
+        const matchedFiles = fileRegistry.filter(f => {
             const keyword = f.keyword.toLowerCase();
+            const fileName = (f.fileName || '').toLowerCase();
             return moduleKeywords.some(kw => keyword.includes(kw)) || 
-                   moduleKeywords.some(kw => (f.fileName || '').toLowerCase().includes(kw));
+                   moduleKeywords.some(kw => fileName.includes(kw));
         });
 
-        if (!file) {
+        if (matchedFiles.length === 0) {
             let message;
             if (isSenderAdmin(sender)) {
                 message = `📭 ${moduleCode} සඳහා PDF File එකක් හම්බුනේ නැහැ.\n\n💡 *උපදෙස්:* අදාළ PDF එක \`add file: ${moduleCode} notes\` ලෙස Save කරන්න.`;
@@ -1164,41 +1166,65 @@ async function handleQuizCommand(sock, sender, msg, specificModule = '') {
             return;
         }
 
-        const filePath = path.join(FILES_DIR, file.storedFileName);
-        if (!fs.existsSync(filePath)) {
-            await sock.sendMessage(sender, { text: `❌ ${moduleCode} සඳහා File එක Server එකේ නෑ. Admin ට කියන්න.` }, { quoted: msg });
-            return;
-        }
-
         try {
-            await sock.sendMessage(sender, { text: `📝 *${moduleCode}* සඳහා Quiz එක හදමින්...` }, { quoted: msg });
+            await sock.sendMessage(sender, { text: `📝 *${moduleCode}* සඳහා අමාරු (Exam-based) Quiz එකක් හදමින්... (PDF ${matchedFiles.length}ක් කියවමින්)` }, { quoted: msg });
 
-            const pdfBuffer = fs.readFileSync(filePath);
-            const base64Pdf = pdfBuffer.toString('base64');
-            const pdfPart = { inlineData: { data: base64Pdf, mimeType: 'application/pdf' } };
+            // ✅ NEW LOGIC: Build an array of PDF parts for Gemini
+            const requestParts = [];
+            let totalSize = 0;
+            const MAX_TOTAL_SIZE = 15 * 1024 * 1024; // 15MB limit for safety
 
-            const quizPrompt = `You are a university lecturer. Based on the following lecture content for the module "${moduleName}", create a quiz with 10 questions.
+            for (const file of matchedFiles) {
+                const filePath = path.join(FILES_DIR, file.storedFileName);
+                if (fs.existsSync(filePath)) {
+                    const pdfBuffer = fs.readFileSync(filePath);
+                    
+                    // Check if adding this file exceeds the total limit
+                    if (totalSize + pdfBuffer.length > MAX_TOTAL_SIZE) {
+                        console.log(`⚠️ Skipping ${file.fileName} - Total size limit reached.`);
+                        break; 
+                    }
 
-RULES:
-- Questions should test understanding, not just memorization.
-- Include a mix of: Multiple Choice, True/False, and Short Answer.
-- Provide clear correct answers.
-- Format neatly for WhatsApp (bullet points, bold text, emojis).
-- **Language Rule:**
-  1. Quiz questions and main correct answers MUST be in **English**.
-  2. After providing the correct answer in English, add a line starting with *"💡 Sinhala Explanation:"* and write a brief, clear explanation in **Sinhala**.
-  3. Use simple Sinhala words.
+                    const base64Pdf = pdfBuffer.toString('base64');
+                    requestParts.push({ inlineData: { data: base64Pdf, mimeType: 'application/pdf' } });
+                    totalSize += pdfBuffer.length;
+                }
+            }
 
-LECTURE CONTENT:
-${''}
+            if (requestParts.length === 0) {
+                await sock.sendMessage(sender, { text: `❌ ${moduleCode} සඳහා අදාළ PDF Files ලොකු වැඩියි. Quiz හදන්න බැහැ.` }, { quoted: msg });
+                return;
+            }
 
-Generate the quiz now.`;
+            // Add the prompt to the beginning of the array
+            const quizPrompt = `You are a strict and highly experienced university examiner for the module "${moduleName}". 
+Based ONLY on the attached lecture contents (PDFs), create a highly challenging, exam-based quiz with 10 questions.
+
+CRITICAL RULES:
+1. READ ONLY THE ATTACHED PDFs. Do not use outside knowledge. If the PDFs don't cover a topic, don't ask it.
+2. Questions MUST be difficult and test deep understanding, NOT simple memorization. Focus on:
+   - Scenario-based application questions (e.g., "If X happens, what is the output?")
+   - Analysis and critical thinking
+   - Tricky multiple-choice questions where options are very similar
+   - Problem-solving (calculations, logic, complex scenarios)
+3. Include a mix of: Complex MCQs, True/False with tricky wording, and Short Answer/Problem Solving.
+4. Provide clear, detailed correct answers explaining WHY it's correct.
+5. Format neatly for WhatsApp (bullet points, bold text, emojis).
+6. **Language Rule:**
+   - Quiz questions and main correct answers MUST be in **English**.
+   - After providing the correct answer in English, add a line starting with *"💡 Sinhala Explanation:"* and write a brief, clear explanation in **Sinhala**.
+   - Use simple Sinhala words.
+
+Generate the advanced quiz now.`;
+
+            // Prepend the prompt
+            requestParts.unshift(quizPrompt);
 
             geminiRequestsToday++;
-            const result = await generateContentWithRetry(model, [quizPrompt, pdfPart]);
+            const result = await generateContentWithRetry(model, requestParts);
             const quizReply = formatMathForWhatsApp(result.response.text());
 
-            const header = `📝 *${moduleCode} - Quiz* (${targetDate.toLocaleDateString('en-LK', { year: 'numeric', month: 'long', day: 'numeric' })})\n───────────────────\n\n`;
+            const header = `📝 *${moduleCode} - Advanced Quiz* (${targetDate.toLocaleDateString('en-LK', { year: 'numeric', month: 'long', day: 'numeric' })})\n───────────────────\n\n`;
             await sock.sendMessage(sender, { text: header + quizReply }, { quoted: msg });
 
             const currentIndex = selectedIndex;
@@ -2297,22 +2323,90 @@ Email: it26100930@my.sliit.lk`;
                 return;
             }
 
-            // ---------- GENERAL AI RESPONSE ----------
+            // ---------- GENERAL AI RESPONSE (WITH PDF CONTEXT) ----------
             if (rawMessageText) {
                 try {
-                    const history = getRecentContext(sender);
+                    // 1. Try to find a matching PDF based on the user's question
+                    let matchedFile = null;
+                    const moduleCodes = ['SE1020', 'IT1170', 'IT1160', 'IT1150', 'IE1011'];
+                    const moduleKeywords = {
+                        'SE1020': ['oop', 'se1020', 'object oriented'],
+                        'IT1170': ['dsa', 'it1170', 'data structures'],
+                        'IT1160': ['discrete', 'it1160', 'math', 'dm'],
+                        'IT1150': ['technical writing', 'it1150', 'writing', 'tw'],
+                        'IE1011': ['information systems', 'ie1011', 'is']
+                    };
+
+                    // Check if user mentioned a module code or keyword
+                    for (const code of moduleCodes) {
+                        const keywords = moduleKeywords[code];
+                        if (textLower.includes(code.toLowerCase()) || keywords.some(kw => textLower.includes(kw))) {
+                            matchedFile = fileRegistry.find(f => 
+                                f.keyword.toLowerCase().includes(code.toLowerCase()) ||
+                                (f.fileName || '').toLowerCase().includes(code.toLowerCase()) ||
+                                keywords.some(kw => f.keyword.toLowerCase().includes(kw))
+                            );
+                            if (matchedFile) break;
+                        }
+                    }
+
+                    // If no module matched, check if any saved file keyword matches the text
+                    if (!matchedFile) {
+                        for (const f of fileRegistry) {
+                            if (textLower.includes(f.keyword.toLowerCase())) {
+                                matchedFile = f;
+                                break;
+                            }
+                        }
+                    }
+
                     let promptToSend = fullUserPrompt;
-                    
-                    if (history) {
+                    let pdfPart = null;
+
+                    if (matchedFile) {
+                        const filePath = path.join(FILES_DIR, matchedFile.storedFileName);
+                        if (fs.existsSync(filePath)) {
+                            const pdfBuffer = fs.readFileSync(filePath);
+                            
+                            // Check file size to avoid API errors (Max ~15MB inline data for safety)
+                            if (pdfBuffer.length < 15 * 1024 * 1024) { 
+                                const base64Pdf = pdfBuffer.toString('base64');
+                                pdfPart = { inlineData: { data: base64Pdf, mimeType: 'application/pdf' } };
+                                console.log(`📄 Attached PDF for context: ${matchedFile.fileName}`);
+                                
+                                // Add instruction to use the PDF
+                                promptToSend = `You are a helpful university assistant. The student is asking a question related to the module content in the attached PDF file.
+                                
+Student's question: "${fullUserPrompt}"
+
+RULES:
+1. Answer the question based PRIMARILY on the content of the attached PDF. If the answer is in the PDF, use it.
+2. If the answer is not in the PDF, you can use your general knowledge, but state "මේක PDF එකේ හරියටම නෑ, ඒත්..." (This is not exactly in the PDF, but...).
+3. Keep the response natural, warm, and helpful (JARVIS style).
+4. Reply in the language the student used (Sinhala/Singlish/English).`;
+                            } else {
+                                console.log(`⚠️ PDF too large to attach: ${matchedFile.fileName}`);
+                            }
+                        }
+                    }
+
+                    const history = getRecentContext(sender);
+                    if (history && !pdfPart) {
                         promptToSend = `Recent conversation with this student:\n${history}\n\nNew message from student: "${fullUserPrompt}"\n\nReply naturally and helpfully. If the batch rep's memory has relevant info, use it confidently as if you already know it.`;
+                    } else if (history && pdfPart) {
+                         promptToSend += `\n\nRecent conversation context:\n${history}`;
                     }
                     
                     geminiRequestsToday++;
-                    const result = await generateContentWithRetry(model, buildPromptWithKnowledge(promptToSend));
+                    
+                    const requestPayload = pdfPart ? [buildPromptWithKnowledge(promptToSend), pdfPart] : buildPromptWithKnowledge(promptToSend);
+                    const result = await generateContentWithRetry(model, requestPayload);
                     const reply = formatMathForWhatsApp(result.response.text());
+                    
                     addToMemory(sender, 'User', fullUserPrompt);
                     addToMemory(sender, 'Bot', reply);
                     await sock.sendMessage(sender, { text: reply }, { quoted: msg });
+                    
                 } catch (error) {
                     console.error('Gemini error:', error);
                     
