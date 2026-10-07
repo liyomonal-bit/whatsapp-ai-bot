@@ -1320,21 +1320,34 @@ async function connectToWhatsApp() {
                 isConnected = false;
                 qrcodeTerminal.generate(qr, { small: true });
             }
-            if (connection === 'close') {
-                isConnected = false;
-                const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-                console.error("❌ WhatsApp Connection Closed! Status Code:", statusCode);
+           if (connection === 'close') {
+    isConnected = false;
+    const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+    console.error("❌ WhatsApp Connection Closed! Status Code:", statusCode);
 
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                sock.ev.removeAllListeners();
-                if (shouldReconnect) {
-                    console.log('🔄 Reconnecting in 3s...');
-                    setTimeout(() => connectToWhatsApp().catch(console.error), 3000);
-                } else {
-                    console.log('Logged out. Exiting.');
-                    process.exit(1);
-                }
-            } else if (connection === 'open') {
+    // ✅ Logged out නම් විතරයි exit වෙන්න
+    if (statusCode === DisconnectReason.loggedOut) {
+        console.log('🚪 Logged out. Manual re-scan ඕන. Exiting.');
+        process.exit(1);
+    }
+
+    // ✅ 428, 503 වගේ errors වලට exponential backoff
+    let reconnectDelay = 3000;
+    
+    if (statusCode === 428 || statusCode === 503) {
+        // 428/503 = temporary issue → වැඩි delay එකක්
+        reconnectDelay = 10000; // 10 seconds
+        console.log(`⏳ Temporary issue (${statusCode}). Waiting ${reconnectDelay/1000}s before retry...`);
+    } else if (statusCode === 401) {
+        // 401 = unauthorized → session corrupted
+        console.log('🔐 Session corrupted. Clearing auth...');
+        reconnectDelay = 5000;
+    }
+    
+    sock.ev.removeAllListeners();
+    console.log(`🔄 Reconnecting in ${reconnectDelay/1000}s...`);
+    setTimeout(() => connectToWhatsApp().catch(console.error), reconnectDelay);
+} else if (connection === 'open') {
                 latestQR = "";
                 isConnected = true;
                 console.log('✅ WhatsApp AI Bot is Ready and Online!');
