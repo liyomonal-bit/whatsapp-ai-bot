@@ -1320,34 +1320,34 @@ async function connectToWhatsApp() {
                 isConnected = false;
                 qrcodeTerminal.generate(qr, { small: true });
             }
-           if (connection === 'close') {
-    isConnected = false;
-    const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-    console.error("❌ WhatsApp Connection Closed! Status Code:", statusCode);
+            if (connection === 'close') {
+                isConnected = false;
+                const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+                console.error("❌ WhatsApp Connection Closed! Status Code:", statusCode);
 
-    // ✅ Logged out නම් විතරයි exit වෙන්න
-    if (statusCode === DisconnectReason.loggedOut) {
-        console.log('🚪 Logged out. Manual re-scan ඕන. Exiting.');
-        process.exit(1);
-    }
+                // ✅ Logged out නම් විතරයි exit වෙන්න
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log('🚪 Logged out. Manual re-scan ඕන. Exiting.');
+                    process.exit(1);
+                }
 
-    // ✅ 428, 503 වගේ errors වලට exponential backoff
-    let reconnectDelay = 3000;
-    
-    if (statusCode === 428 || statusCode === 503) {
-        // 428/503 = temporary issue → වැඩි delay එකක්
-        reconnectDelay = 10000; // 10 seconds
-        console.log(`⏳ Temporary issue (${statusCode}). Waiting ${reconnectDelay/1000}s before retry...`);
-    } else if (statusCode === 401) {
-        // 401 = unauthorized → session corrupted
-        console.log('🔐 Session corrupted. Clearing auth...');
-        reconnectDelay = 5000;
-    }
-    
-    sock.ev.removeAllListeners();
-    console.log(`🔄 Reconnecting in ${reconnectDelay/1000}s...`);
-    setTimeout(() => connectToWhatsApp().catch(console.error), reconnectDelay);
-} else if (connection === 'open') {
+                // ✅ 428, 503 වගේ errors වලට exponential backoff
+                let reconnectDelay = 3000;
+                
+                if (statusCode === 428 || statusCode === 503) {
+                    // 428/503 = temporary issue → වැඩි delay එකක්
+                    reconnectDelay = 10000; // 10 seconds
+                    console.log(`⏳ Temporary issue (${statusCode}). Waiting ${reconnectDelay/1000}s before retry...`);
+                } else if (statusCode === 401) {
+                    // 401 = unauthorized → session corrupted
+                    console.log('🔐 Session corrupted. Clearing auth...');
+                    reconnectDelay = 5000;
+                }
+                
+                sock.ev.removeAllListeners();
+                console.log(`🔄 Reconnecting in ${reconnectDelay/1000}s...`);
+                setTimeout(() => connectToWhatsApp().catch(console.error), reconnectDelay);
+            } else if (connection === 'open') {
                 latestQR = "";
                 isConnected = true;
                 console.log('✅ WhatsApp AI Bot is Ready and Online!');
@@ -1359,6 +1359,37 @@ async function connectToWhatsApp() {
                 }
                 saveMataraStudents();
                 console.log(`📇 Registered ${mataraStudents.length} existing students as Matara students.`);
+            }
+        });
+
+        // ================================================================
+        //  📞 INCOMING CALL HANDLER
+        // ================================================================
+        sock.ev.on('call', async (calls) => {
+            for (const call of calls) {
+                if (call.status === 'offer') {
+                    const callerJid = call.from;
+                    const isVideo = call.isVideo;
+
+                    console.log(`📞 Incoming ${isVideo ? 'VIDEO' : 'VOICE'} call from ${callerJid}`);
+
+                    try {
+                        // 1. Call එක reject කරනවා
+                        await sock.rejectCall(call.id, callerJid);
+
+                        // 2. Friendly auto-reply එකක් යවනවා
+                        await sock.sendMessage(callerJid, {
+                            text: `🤖 *HansanaBot* කෙනෙක්ට Call answer කරන්නේ නෑ!\n\n` +
+                                  `මම *AI Assistant* කෙනෙක් — voice calls handle කරන්න මට බෑ. 🙏\n\n` +
+                                  `💬 කරුණාකර *Message* එකක් යවන්න. ඉක්මනට reply කරන්නම්!\n\n` +
+                                  `_උදා: "හෙට class තියෙනවද?" හෝ "quiz" කියලා type කරන්න._`
+                        });
+
+                        console.log(`✅ Call rejected + auto-reply sent to ${callerJid}`);
+                    } catch (err) {
+                        console.error('❌ Call handling error:', err);
+                    }
+                }
             }
         });
 
@@ -1560,47 +1591,6 @@ async function connectToWhatsApp() {
                 return;
             }
 
-        // ---------- SEND MEDIA TO GROUP ----------
-if (/^(send media to group|send file to group)\b/i.test(textLower) && (docMsg || imgMsg)) {
-    if (!isSenderAdmin(sender)) {
-        await sock.sendMessage(sender, { text: "❌ Batch Rep only!" }, { quoted: msg });
-        return;
-    }
-    if (!GROUP_JID) {
-        await sock.sendMessage(sender, { text: "⚠️ GROUP_JID set කරලා නෑ!" }, { quoted: msg });
-        return;
-    }
-
-    const caption = rawMessageText
-        .replace(/^(send media to group|send file to group)\s*:?\s*/i, '')
-        .trim();
-
-    try {
-        const media = docMsg || imgMsg;
-        const buffer = await downloadMediaMessage(msg, 'buffer', {});
-        
-        if (docMsg) {
-            await sock.sendMessage(GROUP_JID, {
-                document: buffer,
-                mimetype: docMsg.mimetype,
-                fileName: docMsg.fileName || 'document.pdf',
-                caption: caption || ''
-            });
-        } else {
-            await sock.sendMessage(GROUP_JID, {
-                image: buffer,
-                caption: caption || ''
-            });
-        }
-        
-        await sock.sendMessage(sender, { text: "✅ Media group එකට යැව්වා!" }, { quoted: msg });
-    } catch (e) {
-        console.error(e);
-        await sock.sendMessage(sender, { text: "❌ යවන්න බැරි වුණා." }, { quoted: msg });
-    }
-    return;
-}
-
             // ---------- PDF ANALYSIS ----------
             if (docMsg) {
                 try {
@@ -1644,6 +1634,92 @@ if (/^(send media to group|send file to group)\b/i.test(textLower) && (docMsg ||
             //  📝 TEXT COMMANDS
             // ================================================================
             const textLower = rawMessageText.toLowerCase().trim();
+
+            // ---------- SEND MEDIA TO GROUP (Admin Only) ----------
+            if (/^(send media to group|send file to group)\b/i.test(textLower) && (docMsg || imgMsg)) {
+                if (!isSenderAdmin(sender)) {
+                    await sock.sendMessage(sender, { text: "❌ Batch Rep only!" }, { quoted: msg });
+                    return;
+                }
+                if (!GROUP_JID) {
+                    await sock.sendMessage(sender, { text: "⚠️ GROUP_JID set කරලා නෑ!" }, { quoted: msg });
+                    return;
+                }
+
+                const caption = rawMessageText
+                    .replace(/^(send media to group|send file to group)\s*:?\s*/i, '')
+                    .trim();
+
+                try {
+                    const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                    
+                    if (docMsg) {
+                        await sock.sendMessage(GROUP_JID, {
+                            document: buffer,
+                            mimetype: docMsg.mimetype,
+                            fileName: docMsg.fileName || 'document.pdf',
+                            caption: caption || ''
+                        });
+                    } else {
+                        await sock.sendMessage(GROUP_JID, {
+                            image: buffer,
+                            caption: caption || ''
+                        });
+                    }
+                    
+                    await sock.sendMessage(sender, { text: "✅ Media group එකට යැව්වා!" }, { quoted: msg });
+                } catch (e) {
+                    console.error(e);
+                    await sock.sendMessage(sender, { text: "❌ යවන්න බැරි වුණා." }, { quoted: msg });
+                }
+                return;
+            }
+
+            // ---------- SEND TO GROUP (Admin Only) ----------
+            if (/^(send to group|group msg|announce|group message)\b/i.test(textLower)) {
+                if (!isSenderAdmin(sender)) {
+                    await sock.sendMessage(sender, { 
+                        text: "❌ මේක කරන්න පුළුවන් Batch Rep ට විතරයි! 🚫" 
+                    }, { quoted: msg });
+                    return;
+                }
+
+                if (!GROUP_JID) {
+                    await sock.sendMessage(sender, { 
+                        text: "⚠️ *GROUP_JID* එක `.env` එකේ set කරලා නෑ!\n\n💡 `.env` එකට මේක add කරන්න:\n`GROUP_JID=1234567890@g.us`" 
+                    }, { quoted: msg });
+                    return;
+                }
+
+                const groupMessage = rawMessageText
+                    .replace(/^(send to group|group msg|announce|group message)\s*:?\s*/i, '')
+                    .trim();
+
+                if (!groupMessage) {
+                    await sock.sendMessage(sender, { 
+                        text: `⚠️ *හරි Format:*\n\`send to group: [message]\`\n\n💡 *උදා:*\n\`send to group: හෙට OOP lab එක cancel!\`` 
+                    }, { quoted: msg });
+                    return;
+                }
+
+                try {
+                    await sock.sendMessage(GROUP_JID, { text: groupMessage });
+                    
+                    await sock.sendMessage(sender, { 
+                        text: `✅ *Group එකට යැව්වා!*\n\n` +
+                              `📤 *Message:* "${groupMessage}"\n` +
+                              `🕐 *Time:* ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}` 
+                    }, { quoted: msg });
+                    
+                    console.log(`📤 Admin sent to group: "${groupMessage}"`);
+                } catch (err) {
+                    console.error('❌ Send to group error:', err);
+                    await sock.sendMessage(sender, { 
+                        text: "❌ Group එකට යවන්න බැරි වුණා. Bot එක group එකේ member ද කියලා check කරන්න." 
+                    }, { quoted: msg });
+                }
+                return;
+            }
 
             // ---------- QUIZ COMMAND ----------
             if (textLower === 'quiz' || textLower === 'quiz එකක්' || textLower === 'quiz ekk' || 
@@ -1698,61 +1774,8 @@ if (/^(send media to group|send file to group)\b/i.test(textLower) && (docMsg ||
                     return;
                 }
             }
-// ================================================================
-//  📤 SEND TO GROUP (Admin Only)
-// ================================================================
-if (/^(send to group|group msg|announce|group message)\b/i.test(textLower)) {
-    
-    // 1. Admin check
-    if (!isSenderAdmin(sender)) {
-        await sock.sendMessage(sender, { 
-            text: "❌ මේක කරන්න පුළුවන් Batch Rep ට විතරයි! 🚫" 
-        }, { quoted: msg });
-        return;
-    }
 
-    // 2. GROUP_JID set වෙලාද බලන්න
-    if (!GROUP_JID) {
-        await sock.sendMessage(sender, { 
-            text: "⚠️ *GROUP_JID* එක `.env` එකේ set කරලා නෑ!\n\n💡 `.env` එකට මේක add කරන්න:\n`GROUP_JID=1234567890@g.us`" 
-        }, { quoted: msg });
-        return;
-    }
-
-    // 3. Message text එක extract කරන්න
-    const groupMessage = rawMessageText
-        .replace(/^(send to group|group msg|announce|group message)\s*:?\s*/i, '')
-        .trim();
-
-    if (!groupMessage) {
-        await sock.sendMessage(sender, { 
-            text: `⚠️ *හරි Format:*\n\`send to group: [message]\`\n\n💡 *උදා:*\n\`send to group: හෙට OOP lab එක cancel!\`` 
-        }, { quoted: msg });
-        return;
-    }
-
-    // 4. Group එකට යවන්න
-    try {
-        await sock.sendMessage(GROUP_JID, { text: groupMessage });
-        
-        // 5. Admin ට confirmation එකක්
-        await sock.sendMessage(sender, { 
-            text: `✅ *Group එකට යැව්වා!*\n\n` +
-                  `📤 *Message:* "${groupMessage}"\n` +
-                  `🕐 *Time:* ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}` 
-        }, { quoted: msg });
-        
-        console.log(`📤 Admin sent to group: "${groupMessage}"`);
-    } catch (err) {
-        console.error('❌ Send to group error:', err);
-        await sock.sendMessage(sender, { 
-            text: "❌ Group එකට යවන්න බැරි වුණා. Bot එක group එකේ member ද කියලා check කරන්න." 
-        }, { quoted: msg });
-    }
-    return;
-}
-        
-           // ---------- ADD INFO ----------
+            // ---------- ADD INFO ----------
             if (/^(add info|info add|save info|remember)\b/i.test(textLower)) {
                 if (!isSenderAdmin(sender)) {
                     await sock.sendMessage(sender, { text: "❌ Batch Rep only!" }, { quoted: msg });
@@ -1818,8 +1841,6 @@ if (/^(send to group|group msg|announce|group message)\b/i.test(textLower)) {
                 return;
             }
 
-
-                
             // ---------- SMART PDF COMMAND ----------
             const pdfKeywords = /\b(pdf|file|danna|ewanna|notes|note|file eka|pdf eka|සටහන්|notes)\b/i;
             if (pdfKeywords.test(textLower) || textLower === 'pdf' || textLower === 'file') {
@@ -1928,6 +1949,11 @@ if (/^(send to group|group msg|announce|group message)\b/i.test(textLower)) {
 📤 *add file: [keyword]*
 📋 *list files*
 🗑️ *remove file [number]*
+
+📤 *Send to Group:*
+💬 *send to group: [message]*
+🖼️ *send media to group: [caption]*
+📄 *send file to group: [caption]*
 
 📊 *Bot:*
 📊 *status*
@@ -2329,6 +2355,13 @@ Catch my drift? Let's get that GPA up! 📈🚀` }, { quoted: msg });
 🎙️ Voice Note එකක් යවන්න - "හෙට timetable එක දෙන්න"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📞 *Call Auto-Reply*
+
+📞 Bot එකට Call කළොත් Auto-Reject වෙනවා
+💬 Caller ට Auto-Reply Message එකක් එවයි
+👉 කරුණාකර *Text Message* එකක් යවන්න
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🧠 *Learning & Fun*
 
 📖 *word / vocabulary* - Academic Word Practice
@@ -2346,6 +2379,11 @@ Email: it26100930@my.sliit.lk`;
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🛠️ *Admin Commands*
+
+📤 *Send to Group:*
+💬 *send to group: [message]*
+🖼️ *send media to group: [caption]* (Image එකේ caption එකට)
+📄 *send file to group: [caption]* (PDF එකේ caption එකට)
 
 🧠 *Memory:*
 📝 *add info: [text]*
