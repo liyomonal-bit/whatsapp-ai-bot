@@ -1547,6 +1547,47 @@ async function connectToWhatsApp() {
                 return;
             }
 
+        // ---------- SEND MEDIA TO GROUP ----------
+if (/^(send media to group|send file to group)\b/i.test(textLower) && (docMsg || imgMsg)) {
+    if (!isSenderAdmin(sender)) {
+        await sock.sendMessage(sender, { text: "❌ Batch Rep only!" }, { quoted: msg });
+        return;
+    }
+    if (!GROUP_JID) {
+        await sock.sendMessage(sender, { text: "⚠️ GROUP_JID set කරලා නෑ!" }, { quoted: msg });
+        return;
+    }
+
+    const caption = rawMessageText
+        .replace(/^(send media to group|send file to group)\s*:?\s*/i, '')
+        .trim();
+
+    try {
+        const media = docMsg || imgMsg;
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        
+        if (docMsg) {
+            await sock.sendMessage(GROUP_JID, {
+                document: buffer,
+                mimetype: docMsg.mimetype,
+                fileName: docMsg.fileName || 'document.pdf',
+                caption: caption || ''
+            });
+        } else {
+            await sock.sendMessage(GROUP_JID, {
+                image: buffer,
+                caption: caption || ''
+            });
+        }
+        
+        await sock.sendMessage(sender, { text: "✅ Media group එකට යැව්වා!" }, { quoted: msg });
+    } catch (e) {
+        console.error(e);
+        await sock.sendMessage(sender, { text: "❌ යවන්න බැරි වුණා." }, { quoted: msg });
+    }
+    return;
+}
+
             // ---------- PDF ANALYSIS ----------
             if (docMsg) {
                 try {
@@ -1644,6 +1685,60 @@ async function connectToWhatsApp() {
                     return;
                 }
             }
+// ================================================================
+//  📤 SEND TO GROUP (Admin Only)
+// ================================================================
+if (/^(send to group|group msg|announce|group message)\b/i.test(textLower)) {
+    
+    // 1. Admin check
+    if (!isSenderAdmin(sender)) {
+        await sock.sendMessage(sender, { 
+            text: "❌ මේක කරන්න පුළුවන් Batch Rep ට විතරයි! 🚫" 
+        }, { quoted: msg });
+        return;
+    }
+
+    // 2. GROUP_JID set වෙලාද බලන්න
+    if (!GROUP_JID) {
+        await sock.sendMessage(sender, { 
+            text: "⚠️ *GROUP_JID* එක `.env` එකේ set කරලා නෑ!\n\n💡 `.env` එකට මේක add කරන්න:\n`GROUP_JID=1234567890@g.us`" 
+        }, { quoted: msg });
+        return;
+    }
+
+    // 3. Message text එක extract කරන්න
+    const groupMessage = rawMessageText
+        .replace(/^(send to group|group msg|announce|group message)\s*:?\s*/i, '')
+        .trim();
+
+    if (!groupMessage) {
+        await sock.sendMessage(sender, { 
+            text: `⚠️ *හරි Format:*\n\`send to group: [message]\`\n\n💡 *උදා:*\n\`send to group: හෙට OOP lab එක cancel!\`` 
+        }, { quoted: msg });
+        return;
+    }
+
+    // 4. Group එකට යවන්න
+    try {
+        await sock.sendMessage(GROUP_JID, { text: groupMessage });
+        
+        // 5. Admin ට confirmation එකක්
+        await sock.sendMessage(sender, { 
+            text: `✅ *Group එකට යැව්වා!*\n\n` +
+                  `📤 *Message:* "${groupMessage}"\n` +
+                  `🕐 *Time:* ${new Date().toLocaleString('en-LK', { timeZone: 'Asia/Colombo' })}` 
+        }, { quoted: msg });
+        
+        console.log(`📤 Admin sent to group: "${groupMessage}"`);
+    } catch (err) {
+        console.error('❌ Send to group error:', err);
+        await sock.sendMessage(sender, { 
+            text: "❌ Group එකට යවන්න බැරි වුණා. Bot එක group එකේ member ද කියලා check කරන්න." 
+        }, { quoted: msg });
+    }
+    return;
+}
+        
            // ---------- ADD INFO ----------
             if (/^(add info|info add|save info|remember)\b/i.test(textLower)) {
                 if (!isSenderAdmin(sender)) {
